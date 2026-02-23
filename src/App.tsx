@@ -31,7 +31,7 @@ export default function App() {
     inflight: 0,
     ready: 0,
   })
-  const [shaderEnabled, setShaderEnabled] = useState(true)
+  const [shaderEnabled, setShaderEnabled] = useState(false)
   const [rayTracingEnabled, setRayTracingEnabled] = useState(false)
   const [shaderSettings, setShaderSettings] = useState<ShaderSettings>(DEFAULT_SHADER_SETTINGS)
 

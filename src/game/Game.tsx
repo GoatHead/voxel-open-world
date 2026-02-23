@@ -22,12 +22,14 @@ import { ChunkMesh } from "./ChunkMesh"
 import type { ShaderSettings } from "./shaderSettings"
 import type { ChunkMeshPayload } from "./types"
 
-const FOG_NEAR = 36
-const FOG_FAR = 88
+const FOG_NEAR = 28
+const FOG_FAR = 72
 const CHUNK_CULL_DISTANCE = FOG_FAR + CHUNK_SIZE * 0.5
 const CHUNK_CULL_INTERVAL = 0.22
 const CHUNK_VIEW_DOT_MIN = 0.15
 const FOG_COLOR = new THREE.Color("#0b1020")
+const IMPACT_TTL_MS = 220
+const IMPACT_MAX = 64
 
 const vertexShader = `
 precision highp float;
@@ -145,8 +147,7 @@ type SceneContentsProps = {
   rayTracingEnabled: boolean
   chunks: Map<string, ChunkMeshPayload>
   setChunks: Dispatch<SetStateAction<Map<string, ChunkMeshPayload>>>
-  impacts: ShotImpact[]
-  setImpacts: Dispatch<SetStateAction<ShotImpact[]>>
+  impactsRef: MutableRefObject<ShotImpact[]>
   playerPositionRef: MutableRefObject<{ x: number; z: number }>
   workerRef: MutableRefObject<Worker | null>
   chunkManagerRef: MutableRefObject<ChunkManager>
@@ -159,11 +160,10 @@ type SceneContentsProps = {
 }
 
 type ShotImpact = {
-  id: string
   x: number
   y: number
   z: number
-  life: number
+  expiresAt: number
 }
 
 function SceneContents({
@@ -171,8 +171,7 @@ function SceneContents({
   shaderEnabled,
   chunks,
   setChunks,
-  impacts,
-  setImpacts,
+  impactsRef,
   playerPositionRef,
   workerRef,
   chunkManagerRef,
@@ -190,6 +189,8 @@ function SceneContents({
   const cullTimerRef = useRef(0)
   const viewDirectionRef = useRef(new THREE.Vector3())
   const chunkToCameraRef = useRef(new THREE.Vector3())
+  const impactMeshRef = useRef<THREE.InstancedMesh | null>(null)
+  const impactDummyRef = useRef(new THREE.Object3D())
   const [visibleChunkKeys, setVisibleChunkKeys] = useState<Set<string>>(new Set())
   const material = useMemo(
     () => {
@@ -380,6 +381,37 @@ function SceneContents({
         return visible
       })
     }
+
+    const impactMesh = impactMeshRef.current
+    if (impactMesh) {
+      const now = performance.now()
+      const impacts = impactsRef.current
+
+      let writeIndex = 0
+      for (let i = 0; i < impacts.length; i += 1) {
+        const impact = impacts[i]
+        if (impact.expiresAt <= now) {
+          continue
+        }
+
+        if (writeIndex !== i) {
+          impacts[writeIndex] = impact
+        }
+
+        if (writeIndex < IMPACT_MAX) {
+          const dummy = impactDummyRef.current
+          dummy.position.set(impact.x + 0.5, impact.y + 0.5, impact.z + 0.5)
+          dummy.updateMatrix()
+          impactMesh.setMatrixAt(writeIndex, dummy.matrix)
+        }
+
+        writeIndex += 1
+      }
+
+      impacts.length = writeIndex
+      impactMesh.count = Math.min(writeIndex, IMPACT_MAX)
+      impactMesh.instanceMatrix.needsUpdate = true
+    }
   })
 
   return (
@@ -403,12 +435,10 @@ function SceneContents({
           visible={visibleChunkKeys.size === 0 || visibleChunkKeys.has(payload.key)}
         />
       ))}
-      {impacts.map((impact) => (
-        <mesh key={impact.id} position={[impact.x + 0.5, impact.y + 0.5, impact.z + 0.5]}>
-          <sphereGeometry args={[0.12, 8, 8]} />
-          <meshBasicMaterial color="#fde047" transparent opacity={Math.min(1, impact.life / 0.25)} />
-        </mesh>
-      ))}
+      <instancedMesh ref={impactMeshRef} args={[undefined, undefined, IMPACT_MAX]}>
+        <sphereGeometry args={[0.12, 8, 8]} />
+        <meshBasicMaterial color="#fde047" />
+      </instancedMesh>
     </>
   )
 }
@@ -424,10 +454,10 @@ export function Game({
   const workerRef = useRef<Worker | null>(null)
   const workerResponsesRef = useRef<MeshWorkerResponse[]>([])
   const forceApplyResponsesRef = useRef<MeshWorkerResponse[]>([])
-  const chunkManagerRef = useRef(new ChunkManager({ activeRadius: 2, removeRadius: 3 }))
+  const chunkManagerRef = useRef(new ChunkManager({ activeRadius: 1, removeRadius: 2 }))
   const playerPositionRef = useRef({ x: 32, z: 32 })
   const [chunks, setChunks] = useState<Map<string, ChunkMeshPayload>>(new Map())
-  const [impacts, setImpacts] = useState<ShotImpact[]>([])
+  const impactsRef = useRef<ShotImpact[]>([])
   const destroyedVoxelIndexRef = useRef(createDestroyedVoxelIndex())
 
   const isSolidAtVoxel = useCallback<IsSolidFn>((ix, iy, iz) => {
@@ -459,20 +489,17 @@ export function Game({
     addDestroyedVoxel(destroyedVoxelIndexRef.current, x, y, z)
 
     const destroyedDelta = new Int32Array([x, y, z])
-    const impactId = `${x},${y},${z}:${performance.now()}`
-    setImpacts((previous) => [
-      ...previous,
-      {
-        id: impactId,
-        x,
-        y,
-        z,
-        life: 0.25,
-      },
-    ])
-    setTimeout(() => {
-      setImpacts((previous) => previous.filter((impact) => impact.id !== impactId))
-    }, 260)
+    const impacts = impactsRef.current
+    impacts.push({
+      x,
+      y,
+      z,
+      expiresAt: performance.now() + IMPACT_TTL_MS,
+    })
+
+    if (impacts.length > IMPACT_MAX * 2) {
+      impacts.splice(0, impacts.length - IMPACT_MAX)
+    }
 
     const centerCx = worldToChunk(x, CHUNK_SIZE).chunk
     const centerCz = worldToChunk(z, CHUNK_SIZE).chunk
@@ -497,7 +524,7 @@ export function Game({
 
   useEffect(() => {
     clearDestroyedVoxelIndex(destroyedVoxelIndexRef.current)
-    setImpacts([])
+    impactsRef.current.length = 0
   }, [seedStr])
 
   useEffect(() => {
@@ -534,8 +561,8 @@ export function Game({
 
   return (
     <Canvas
-      camera={{ fov: 65, near: 0.1, far: FOG_FAR + 20, position: [32, 48, 32] }}
-      dpr={[0.75, 1]}
+      camera={{ fov: 65, near: 0.1, far: FOG_FAR + 16, position: [32, 48, 32] }}
+      dpr={[0.5, 0.8]}
       gl={{ antialias: false, powerPreference: "high-performance" }}
       style={{ position: "fixed", inset: 0 }}
     >
@@ -544,7 +571,7 @@ export function Game({
         chunkManagerRef={chunkManagerRef}
         chunks={chunks}
         forceApplyResponsesRef={forceApplyResponsesRef}
-        impacts={impacts}
+        impactsRef={impactsRef}
         isSolidAtVoxel={isSolidAtVoxel}
         onChunkStatsChange={onChunkStatsChange}
         onShootVoxel={onShootVoxel}
@@ -553,7 +580,6 @@ export function Game({
         shaderSettings={shaderSettings}
         playerPositionRef={playerPositionRef}
         seedStr={seedStr}
-        setImpacts={setImpacts}
         setChunks={setChunks}
         workerRef={workerRef}
         workerResponsesRef={workerResponsesRef}
