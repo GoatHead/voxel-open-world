@@ -1,0 +1,32 @@
+{
+  "name": "react-voxel-openworld-mvp",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "npm run typecheck && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "worldhash": "tsx scripts/worldhash.ts"
+  },
+  "dependencies": {
+    "@react-three/drei": "^9.108.0",
+    "@react-three/fiber": "^8.17.7",
+    "alea": "^1.0.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "simplex-noise": "^4.0.3",
+    "three": "^0.173.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.2",
+    "@vitejs/plugin-react": "^4.3.4",
+    "tsx": "^4.19.1",
+    "typescript": "^5.8.3",
+    "vite": "^5.4.0",
+    "vitest": "^2.1.8"
+  }
+}

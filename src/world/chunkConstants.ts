@@ -1,0 +1,6 @@
+export const CHUNK_SIZE = 16;
+export const CHUNK_HEIGHT = 64;
+
+export const CHUNK_PADDING = 1;
+export const CHUNK_SIZE_PADDED = CHUNK_SIZE + CHUNK_PADDING * 2;
+export const CHUNK_HEIGHT_PADDED = CHUNK_HEIGHT + CHUNK_PADDING * 2;
