@@ -32,7 +32,7 @@ export function FpsController({
   const gunDirRef = useRef(new THREE.Vector3());
   const gunRightRef = useRef(new THREE.Vector3());
   const gunDownRef = useRef(new THREE.Vector3());
-  const solidCacheRef = useRef<Map<string, boolean>>(new Map());
+  const solidCacheRef = useRef<Map<number, boolean>>(new Map());
   const keyStateRef = useRef<KeyState>({
     forward: false,
     backward: false,
@@ -135,7 +135,7 @@ export function FpsController({
 
     const solidCache = solidCacheRef.current;
     const cachedIsSolid: IsSolidFn = (ix, iy, iz) => {
-      const key = `${ix}|${iy}|${iz}`;
+      const key = (ix * 73856093 ^ iy * 19349669 ^ iz * 83492791) | 0;
       const cached = solidCache.get(key);
       if (cached !== undefined) {
         return cached;

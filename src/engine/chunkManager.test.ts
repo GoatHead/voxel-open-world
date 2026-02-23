@@ -97,4 +97,59 @@ describe("ChunkManager", () => {
     const movedFar = manager.tick({ playerX: 32, playerZ: 0, seedStr: "demo" });
     expect(movedFar.unloadKeys).toContain(chunkKey(0, 0));
   });
+
+  it("limits inflight requests to avoid worker backlog growth", () => {
+    const manager = new ChunkManager({ activeRadius: 1, removeRadius: 2, maxInflight: 1 });
+
+    const firstTick = manager.tick({ playerX: 0, playerZ: 0, seedStr: "demo" });
+    expect(firstTick.request).toBeDefined();
+    expect(manager.getStats().inflight).toBe(1);
+
+    const secondTick = manager.tick({ playerX: 0, playerZ: 0, seedStr: "demo" });
+    expect(secondTick.request).toBeUndefined();
+    expect(manager.getStats().inflight).toBe(1);
+
+    if (!firstTick.request) {
+      throw new Error("expected a first request");
+    }
+
+    const afterResponse = manager.tick({
+      playerX: 0,
+      playerZ: 0,
+      seedStr: "demo",
+      workerResponses: [makeResponse(firstTick.request.cx, firstTick.request.cz)],
+    });
+    expect(afterResponse.apply?.key).toBe(chunkKey(firstTick.request.cx, firstTick.request.cz));
+    expect(manager.getStats().inflight).toBe(0);
+
+    const nextTick = manager.tick({ playerX: 0, playerZ: 0, seedStr: "demo" });
+    expect(nextTick.request).toBeDefined();
+  });
+
+  it("can throttle request and apply from caller", () => {
+    const manager = new ChunkManager({ activeRadius: 0, removeRadius: 1, maxInflight: 1 });
+
+    const firstTick = manager.tick({
+      playerX: 0,
+      playerZ: 0,
+      seedStr: "demo",
+      allowRequest: false,
+    });
+    expect(firstTick.request).toBeUndefined();
+
+    const secondTick = manager.tick({ playerX: 0, playerZ: 0, seedStr: "demo" });
+    expect(secondTick.request).toMatchObject({ cx: 0, cz: 0 });
+
+    const gatedApplyTick = manager.tick({
+      playerX: 0,
+      playerZ: 0,
+      seedStr: "demo",
+      workerResponses: [makeResponse(0, 0)],
+      allowApply: false,
+    });
+    expect(gatedApplyTick.apply).toBeUndefined();
+
+    const openApplyTick = manager.tick({ playerX: 0, playerZ: 0, seedStr: "demo" });
+    expect(openApplyTick.apply?.key).toBe(chunkKey(0, 0));
+  });
 });

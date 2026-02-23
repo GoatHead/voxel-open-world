@@ -30,6 +30,12 @@ const CHUNK_VIEW_DOT_MIN = 0.15
 const FOG_COLOR = new THREE.Color("#0b1020")
 const IMPACT_TTL_MS = 220
 const IMPACT_MAX = 64
+const MAX_WORKER_RESPONSES_PER_FRAME = 1
+const MAX_FORCE_APPLY_RESPONSES_PER_FRAME = 1
+const MAX_PENDING_WORKER_RESPONSES = 96
+const MAX_PENDING_FORCE_APPLY_RESPONSES = 96
+const CHUNK_REQUEST_INTERVAL = 0.08
+const CHUNK_APPLY_INTERVAL = 0.08
 
 const vertexShader = `
 precision highp float;
@@ -138,6 +144,7 @@ type GameProps = {
   rayTracingEnabled: boolean
   onChunkCountChange?: (count: number) => void
   onChunkStatsChange?: (stats: ChunkManagerStats) => void
+  onFpsChange?: (fps: number) => void
   shaderSettings: ShaderSettings
 }
 
@@ -156,6 +163,7 @@ type SceneContentsProps = {
   isSolidAtVoxel: IsSolidFn
   onShootVoxel: (x: number, y: number, z: number) => void
   onChunkStatsChange?: (stats: ChunkManagerStats) => void
+  onFpsChange?: (fps: number) => void
   shaderSettings: ShaderSettings
 }
 
@@ -180,6 +188,7 @@ function SceneContents({
   isSolidAtVoxel,
   onShootVoxel,
   onChunkStatsChange,
+  onFpsChange,
   shaderSettings,
   rayTracingEnabled,
 }: SceneContentsProps) {
@@ -187,10 +196,15 @@ function SceneContents({
   const previousStatsRef = useRef<ChunkManagerStats | null>(null)
   const materialRef = useRef<THREE.ShaderMaterial | null>(null)
   const cullTimerRef = useRef(0)
+  const requestTimerRef = useRef(0)
+  const applyTimerRef = useRef(0)
   const viewDirectionRef = useRef(new THREE.Vector3())
   const chunkToCameraRef = useRef(new THREE.Vector3())
   const impactMeshRef = useRef<THREE.InstancedMesh | null>(null)
   const impactDummyRef = useRef(new THREE.Object3D())
+  const prevImpactCountRef = useRef(0)
+  const fpsFrameCountRef = useRef(0)
+  const fpsLastTickRef = useRef(performance.now())
   const [visibleChunkKeys, setVisibleChunkKeys] = useState<Set<string>>(new Set())
   const material = useMemo(
     () => {
@@ -251,35 +265,53 @@ function SceneContents({
       materialRef.current.uniforms.uTime.value += delta
     }
 
-    const queuedResponses = workerResponsesRef.current
-    const queuedForceApplyResponses = forceApplyResponsesRef.current
-    const hasWorkerResponses = queuedResponses.length > 0
-    const hasForceApplyResponses = queuedForceApplyResponses.length > 0
-    const workerResponses = hasWorkerResponses ? queuedResponses : undefined
+    if (onFpsChange) {
+      fpsFrameCountRef.current += 1
+      const now = performance.now()
+      const elapsed = now - fpsLastTickRef.current
+
+      if (elapsed >= 1000) {
+        onFpsChange(Math.round((fpsFrameCountRef.current * 1000) / elapsed))
+        fpsFrameCountRef.current = 0
+        fpsLastTickRef.current = now
+      }
+    }
+
+    const workerResponses = dequeueBatch(workerResponsesRef.current, MAX_WORKER_RESPONSES_PER_FRAME)
+    const forceApplyResponses = dequeueBatch(forceApplyResponsesRef.current, MAX_FORCE_APPLY_RESPONSES_PER_FRAME)
     const playerPosition = playerPositionRef.current
+    requestTimerRef.current += delta
+    applyTimerRef.current += delta
+    const allowRequest = requestTimerRef.current >= CHUNK_REQUEST_INTERVAL
+    const allowApply = applyTimerRef.current >= CHUNK_APPLY_INTERVAL
+
+    if (allowRequest) {
+      requestTimerRef.current = 0
+    }
+
+    if (allowApply) {
+      applyTimerRef.current = 0
+    }
 
     const { request, apply, unloadKeys } = chunkManagerRef.current.tick({
       playerX: playerPosition.x,
       playerZ: playerPosition.z,
       seedStr,
-      workerResponses,
+      workerResponses: workerResponses.length > 0 ? workerResponses : undefined,
+      allowRequest,
+      allowApply,
     })
 
-    if (hasWorkerResponses) {
-      queuedResponses.length = 0
-    }
-
-    if (hasForceApplyResponses) {
+    if (forceApplyResponses.length > 0) {
       setChunks((previous) => {
         const next = new Map(previous)
         let changed = false
 
-        for (const response of queuedForceApplyResponses) {
+        for (const response of forceApplyResponses) {
           next.set(response.key, response)
           changed = true
         }
 
-        queuedForceApplyResponses.length = 0
         return changed ? next : previous
       })
     }
@@ -409,8 +441,12 @@ function SceneContents({
       }
 
       impacts.length = writeIndex
-      impactMesh.count = Math.min(writeIndex, IMPACT_MAX)
-      impactMesh.instanceMatrix.needsUpdate = true
+      const nextCount = Math.min(writeIndex, IMPACT_MAX)
+      if (nextCount > 0 || prevImpactCountRef.current > 0) {
+        impactMesh.count = nextCount
+        impactMesh.instanceMatrix.needsUpdate = true
+      }
+      prevImpactCountRef.current = nextCount
     }
   })
 
@@ -449,12 +485,13 @@ export function Game({
   rayTracingEnabled,
   onChunkCountChange,
   onChunkStatsChange,
+  onFpsChange,
   shaderSettings,
 }: GameProps) {
   const workerRef = useRef<Worker | null>(null)
   const workerResponsesRef = useRef<MeshWorkerResponse[]>([])
   const forceApplyResponsesRef = useRef<MeshWorkerResponse[]>([])
-  const chunkManagerRef = useRef(new ChunkManager({ activeRadius: 1, removeRadius: 2 }))
+  const chunkManagerRef = useRef(new ChunkManager({ activeRadius: 1, removeRadius: 1, maxInflight: 1 }))
   const playerPositionRef = useRef({ x: 32, z: 32 })
   const [chunks, setChunks] = useState<Map<string, ChunkMeshPayload>>(new Map())
   const impactsRef = useRef<ShotImpact[]>([])
@@ -538,11 +575,21 @@ export function Game({
 
     worker.onmessage = (event: MessageEvent<MeshWorkerResponse>) => {
       if (event.data.forceApply) {
-        forceApplyResponsesRef.current.push(event.data)
+        const queue = forceApplyResponsesRef.current
+        queue.push(event.data)
+
+        if (queue.length > MAX_PENDING_FORCE_APPLY_RESPONSES) {
+          queue.splice(0, queue.length - MAX_PENDING_FORCE_APPLY_RESPONSES)
+        }
         return
       }
 
-      workerResponsesRef.current.push(event.data)
+      const queue = workerResponsesRef.current
+      queue.push(event.data)
+
+      if (queue.length > MAX_PENDING_WORKER_RESPONSES) {
+        queue.splice(0, queue.length - MAX_PENDING_WORKER_RESPONSES)
+      }
     }
 
     workerRef.current = worker
@@ -552,6 +599,7 @@ export function Game({
       worker.terminate()
       workerRef.current = null
       workerResponsesRef.current = []
+      forceApplyResponsesRef.current = []
     }
   }, [])
 
@@ -574,6 +622,7 @@ export function Game({
         impactsRef={impactsRef}
         isSolidAtVoxel={isSolidAtVoxel}
         onChunkStatsChange={onChunkStatsChange}
+        onFpsChange={onFpsChange}
         onShootVoxel={onShootVoxel}
         rayTracingEnabled={rayTracingEnabled}
         shaderEnabled={shaderEnabled}
@@ -586,4 +635,13 @@ export function Game({
       />
     </Canvas>
   )
+}
+
+function dequeueBatch<T>(queue: T[], max: number): T[] {
+  if (queue.length === 0) {
+    return []
+  }
+
+  const count = Math.min(max, queue.length)
+  return queue.splice(0, count)
 }

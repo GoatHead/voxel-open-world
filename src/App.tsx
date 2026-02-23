@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useMemo, useState } from "react"
 
 import type { ChunkManagerStats } from "./engine/chunkManager"
 import { Game } from "./game/Game"
@@ -43,30 +43,6 @@ export default function App() {
     return new URLSearchParams(window.location.search).get("debug") === "1"
   }, [])
 
-  useEffect(() => {
-    let lastTick = performance.now()
-    let frames = 0
-    let frameId = 0
-
-    const updateFps = (now: number) => {
-      frames += 1
-      const elapsed = now - lastTick
-
-      if (elapsed >= 1000) {
-        setFps(Math.round((frames * 1000) / elapsed))
-        frames = 0
-        lastTick = now
-      }
-
-      frameId = requestAnimationFrame(updateFps)
-    }
-
-    frameId = requestAnimationFrame(updateFps)
-
-    return () => {
-      cancelAnimationFrame(frameId)
-    }
-  }, [])
 
   const copyToClipboard = async (text: string): Promise<boolean> => {
     if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
@@ -129,6 +105,7 @@ export default function App() {
         shaderSettings={shaderSettings}
         onChunkCountChange={setChunkCount}
         onChunkStatsChange={isDebugMode ? setChunkStats : undefined}
+        onFpsChange={setFps}
       />
 
       <aside className="fps-toolbox" data-testid="fps-toolbox">

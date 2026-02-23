@@ -5,6 +5,7 @@ import { CHUNK_SIZE } from "../world/chunkConstants";
 
 export const DEFAULT_ACTIVE_RADIUS = 4;
 export const DEFAULT_REMOVE_RADIUS = 6;
+export const DEFAULT_MAX_INFLIGHT = 1;
 
 type ChunkCoord2D = {
   cx: number;
@@ -16,6 +17,8 @@ export type ChunkManagerTickParams = {
   playerZ: number;
   seedStr: string;
   workerResponses?: MeshWorkerResponse[];
+  allowRequest?: boolean;
+  allowApply?: boolean;
 };
 
 export type ChunkManagerTickResult = {
@@ -66,6 +69,7 @@ export function computeNeededChunkKeys(
 export class ChunkManager {
   private readonly activeRadius: number;
   private readonly removeRadius: number;
+  private readonly maxInflight: number;
 
   private readonly loaded = new Map<string, MeshWorkerResponse>();
   private readonly inflight = new Map<string, MeshWorkerRequest>();
@@ -75,9 +79,10 @@ export class ChunkManager {
   private seedStr: string | null = null;
   private seedInt: number | null = null;
 
-  public constructor(options?: { activeRadius?: number; removeRadius?: number }) {
+  public constructor(options?: { activeRadius?: number; removeRadius?: number; maxInflight?: number }) {
     this.activeRadius = Math.max(0, Math.floor(options?.activeRadius ?? DEFAULT_ACTIVE_RADIUS));
     this.removeRadius = Math.max(0, Math.floor(options?.removeRadius ?? DEFAULT_REMOVE_RADIUS));
+    this.maxInflight = Math.max(1, Math.floor(options?.maxInflight ?? DEFAULT_MAX_INFLIGHT));
 
     if (this.removeRadius < this.activeRadius) {
       throw new Error("removeRadius must be >= activeRadius");
@@ -114,8 +119,8 @@ export class ChunkManager {
     this.unloadOutsideRemoveRadius(centerCx, centerCz, unloadKeys);
     this.refreshQueue(centerCx, centerCz);
 
-    const request = this.dequeueRequest();
-    const apply = this.dequeueApply(centerCx, centerCz);
+    const request = params.allowRequest === false ? undefined : this.dequeueRequest();
+    const apply = params.allowApply === false ? undefined : this.dequeueApply(centerCx, centerCz);
 
     return {
       request,
@@ -180,6 +185,10 @@ export class ChunkManager {
   }
 
   private dequeueRequest(): MeshWorkerRequest | undefined {
+    if (this.inflight.size >= this.maxInflight) {
+      return undefined;
+    }
+
     const first = this.queued.entries().next();
 
     if (first.done) {
