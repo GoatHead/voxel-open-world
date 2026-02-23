@@ -36,6 +36,9 @@ const MAX_PENDING_WORKER_RESPONSES = 96
 const MAX_PENDING_FORCE_APPLY_RESPONSES = 96
 const CHUNK_REQUEST_INTERVAL = 0.08
 const CHUNK_APPLY_INTERVAL = 0.08
+const FOG_HEARTBEAT_AMPLITUDE = 0.05
+const BG_HEARTBEAT_AMPLITUDE = 0.003
+const BG_BASE = new THREE.Color("#0a0f1c")
 
 const vertexShader = `
 precision highp float;
@@ -145,7 +148,25 @@ type GameProps = {
   onChunkCountChange?: (count: number) => void
   onChunkStatsChange?: (stats: ChunkManagerStats) => void
   onFpsChange?: (fps: number) => void
+  onFrameDiagnosticsChange?: (diagnostics: FrameDiagnostics) => void
   shaderSettings: ShaderSettings
+}
+
+export type FrameDiagnostics = {
+  fps: number
+  avgDeltaMs: number
+  maxDeltaMs: number
+  avgWorkMs: number
+  rafGapMs: number
+  drawCalls: number
+  triangles: number
+  chunkCount: number
+  visibleChunkCount: number
+  workerQueueDepth: number
+  forceApplyQueueDepth: number
+  pointerLocked: boolean
+  documentVisible: boolean
+  hasFocus: boolean
 }
 
 type SceneContentsProps = {
@@ -164,6 +185,7 @@ type SceneContentsProps = {
   onShootVoxel: (x: number, y: number, z: number) => void
   onChunkStatsChange?: (stats: ChunkManagerStats) => void
   onFpsChange?: (fps: number) => void
+  onFrameDiagnosticsChange?: (diagnostics: FrameDiagnostics) => void
   shaderSettings: ShaderSettings
 }
 
@@ -189,6 +211,7 @@ function SceneContents({
   onShootVoxel,
   onChunkStatsChange,
   onFpsChange,
+  onFrameDiagnosticsChange,
   shaderSettings,
   rayTracingEnabled,
 }: SceneContentsProps) {
@@ -205,6 +228,13 @@ function SceneContents({
   const prevImpactCountRef = useRef(0)
   const fpsFrameCountRef = useRef(0)
   const fpsLastTickRef = useRef(performance.now())
+  const diagnosticsFrameCountRef = useRef(0)
+  const diagnosticsDeltaAccumRef = useRef(0)
+  const diagnosticsWorkAccumRef = useRef(0)
+  const diagnosticsMaxDeltaRef = useRef(0)
+  const diagnosticsLastTickRef = useRef(performance.now())
+  const diagnosticsLastFrameNowRef = useRef(performance.now())
+  const diagnosticsLastRafGapRef = useRef(0)
   const [visibleChunkKeys, setVisibleChunkKeys] = useState<Set<string>>(new Set())
   const material = useMemo(
     () => {
@@ -261,9 +291,25 @@ function SceneContents({
   }, [material, rayTracingEnabled, shaderSettings.ambient, shaderSettings.banding, shaderSettings.contrast, shaderSettings.rim, shaderSettings.saturation, shaderSettings.sunlight])
 
   useFrame((state, delta) => {
+    const frameStart = performance.now()
+    const rafGapMs = frameStart - diagnosticsLastFrameNowRef.current
+    diagnosticsLastFrameNowRef.current = frameStart
+    diagnosticsLastRafGapRef.current = rafGapMs
+    const heartbeat = Math.sin(state.clock.elapsedTime * 2.1)
+    const fogPulse = Math.sin(state.clock.elapsedTime * 5.3)
+
     const fog = state.scene.fog as THREE.Fog | null
     if (fog) {
-      fog.near = FOG_NEAR + Math.sin(state.clock.elapsedTime * 113) * 0.001
+      fog.near = FOG_NEAR + fogPulse * FOG_HEARTBEAT_AMPLITUDE
+    }
+
+    const background = state.scene.background
+    if (background instanceof THREE.Color) {
+      background.setRGB(
+        BG_BASE.r + heartbeat * BG_HEARTBEAT_AMPLITUDE,
+        BG_BASE.g + heartbeat * BG_HEARTBEAT_AMPLITUDE,
+        BG_BASE.b + heartbeat * BG_HEARTBEAT_AMPLITUDE,
+      )
     }
 
     if (materialRef.current) {
@@ -272,13 +318,12 @@ function SceneContents({
 
     if (onFpsChange) {
       fpsFrameCountRef.current += 1
-      const now = performance.now()
-      const elapsed = now - fpsLastTickRef.current
+      const elapsed = frameStart - fpsLastTickRef.current
 
       if (elapsed >= 1000) {
         onFpsChange(Math.round((fpsFrameCountRef.current * 1000) / elapsed))
         fpsFrameCountRef.current = 0
-        fpsLastTickRef.current = now
+        fpsLastTickRef.current = frameStart
       }
     }
 
@@ -421,7 +466,7 @@ function SceneContents({
 
     const impactMesh = impactMeshRef.current
     if (impactMesh) {
-      const now = performance.now()
+      const now = frameStart
       const impacts = impactsRef.current
 
       let writeIndex = 0
@@ -452,6 +497,40 @@ function SceneContents({
         impactMesh.instanceMatrix.needsUpdate = true
       }
       prevImpactCountRef.current = nextCount
+    }
+
+    if (onFrameDiagnosticsChange) {
+      const frameWorkMs = performance.now() - frameStart
+      diagnosticsFrameCountRef.current += 1
+      diagnosticsDeltaAccumRef.current += delta * 1000
+      diagnosticsWorkAccumRef.current += frameWorkMs
+      diagnosticsMaxDeltaRef.current = Math.max(diagnosticsMaxDeltaRef.current, delta * 1000)
+      const elapsed = frameStart - diagnosticsLastTickRef.current
+
+      if (elapsed >= 1000) {
+        const frames = diagnosticsFrameCountRef.current
+        onFrameDiagnosticsChange({
+          fps: Math.round((frames * 1000) / elapsed),
+          avgDeltaMs: diagnosticsDeltaAccumRef.current / frames,
+          maxDeltaMs: diagnosticsMaxDeltaRef.current,
+          avgWorkMs: diagnosticsWorkAccumRef.current / frames,
+          rafGapMs: diagnosticsLastRafGapRef.current,
+          drawCalls: state.gl.info.render.calls,
+          triangles: state.gl.info.render.triangles,
+          chunkCount: chunks.size,
+          visibleChunkCount: visibleChunkKeys.size === 0 ? chunks.size : visibleChunkKeys.size,
+          workerQueueDepth: workerResponsesRef.current.length,
+          forceApplyQueueDepth: forceApplyResponsesRef.current.length,
+          pointerLocked: document.pointerLockElement !== null,
+          documentVisible: document.visibilityState === "visible",
+          hasFocus: document.hasFocus(),
+        })
+        diagnosticsFrameCountRef.current = 0
+        diagnosticsDeltaAccumRef.current = 0
+        diagnosticsWorkAccumRef.current = 0
+        diagnosticsMaxDeltaRef.current = 0
+        diagnosticsLastTickRef.current = frameStart
+      }
     }
   })
 
@@ -491,6 +570,7 @@ export function Game({
   onChunkCountChange,
   onChunkStatsChange,
   onFpsChange,
+  onFrameDiagnosticsChange,
   shaderSettings,
 }: GameProps) {
   const workerRef = useRef<Worker | null>(null)
@@ -628,6 +708,7 @@ export function Game({
         impactsRef={impactsRef}
         isSolidAtVoxel={isSolidAtVoxel}
         onChunkStatsChange={onChunkStatsChange}
+        onFrameDiagnosticsChange={onFrameDiagnosticsChange}
         onFpsChange={onFpsChange}
         onShootVoxel={onShootVoxel}
         rayTracingEnabled={rayTracingEnabled}

@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 
 import type { ChunkManagerStats } from "./engine/chunkManager"
-import { Game } from "./game/Game"
+import { Game, type FrameDiagnostics } from "./game/Game"
 import { DEFAULT_SHADER_SETTINGS, type ShaderSettings } from "./game/shaderSettings"
 import { makeShareUrl, parseSeedFromUrl, randomSeedStr } from "./lib/seed"
 
@@ -31,6 +31,7 @@ export default function App() {
     inflight: 0,
     ready: 0,
   })
+  const [frameDiagnostics, setFrameDiagnostics] = useState<FrameDiagnostics | null>(null)
   const [shaderEnabled, setShaderEnabled] = useState(false)
   const [rayTracingEnabled, setRayTracingEnabled] = useState(false)
   const [shaderSettings, setShaderSettings] = useState<ShaderSettings>(DEFAULT_SHADER_SETTINGS)
@@ -96,6 +97,28 @@ export default function App() {
     setShaderSettings(DEFAULT_SHADER_SETTINGS)
   }
 
+  const runtimeState = useMemo(() => {
+    if (!frameDiagnostics) {
+      return "init"
+    }
+
+    if (!frameDiagnostics.documentVisible) {
+      return "hidden"
+    }
+
+    if (!frameDiagnostics.hasFocus) {
+      return "unfocused"
+    }
+
+    if (!frameDiagnostics.pointerLocked) {
+      return "unlocked"
+    }
+
+    return "active"
+  }, [frameDiagnostics])
+
+  const fpsLabel = runtimeState === "active" || runtimeState === "unlocked" ? String(fps) : "inactive"
+
   return (
     <div className="app-shell">
       <Game
@@ -105,13 +128,20 @@ export default function App() {
         shaderSettings={shaderSettings}
         onChunkCountChange={setChunkCount}
         onChunkStatsChange={isDebugMode ? setChunkStats : undefined}
+        onFrameDiagnosticsChange={setFrameDiagnostics}
         onFpsChange={setFps}
       />
 
       <aside className="fps-toolbox" data-testid="fps-toolbox">
         <h2>FPS</h2>
-        <p>{fps}</p>
+        <p>{fpsLabel}</p>
         <p>Chunks: {chunkCount}</p>
+        <p>State: {runtimeState}</p>
+        {isDebugMode && frameDiagnostics && (
+          <p>
+            gap={frameDiagnostics.rafGapMs.toFixed(1)}ms work={frameDiagnostics.avgWorkMs.toFixed(2)}ms draw={frameDiagnostics.drawCalls}
+          </p>
+        )}
       </aside>
 
       {!isOverlayVisible && <div className="crosshair" aria-hidden="true" />}
@@ -202,11 +232,19 @@ export default function App() {
               Share URL: <span data-testid="share-url">{shareUrl}</span>
             </p>
             <p>
-              Chunk count: <span data-testid="chunk-count">{chunkCount}</span>
+              Chunk count: <span data-testid="chunk-count">{chunkCount}</span> (state: {runtimeState})
             </p>
             {isDebugMode && (
               <p>
                 Chunk debug: loaded={chunkStats.loaded} queued={chunkStats.queued} inflight={chunkStats.inflight} ready={chunkStats.ready}
+              </p>
+            )}
+            {isDebugMode && frameDiagnostics && (
+              <p>
+                Frame debug: avgDelta={frameDiagnostics.avgDeltaMs.toFixed(1)}ms maxDelta={frameDiagnostics.maxDeltaMs.toFixed(1)}ms
+                workerQ={frameDiagnostics.workerQueueDepth} forceQ={frameDiagnostics.forceApplyQueueDepth} visible=
+                {frameDiagnostics.documentVisible ? "1" : "0"} focus={frameDiagnostics.hasFocus ? "1" : "0"} lock=
+                {frameDiagnostics.pointerLocked ? "1" : "0"}
               </p>
             )}
             <button
