@@ -22,6 +22,24 @@ body {
   padding: 1rem;
 }
 
+.app-shell::after {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
+  opacity: 0.01;
+  will-change: transform;
+  animation: _keepalive 1s linear infinite;
+}
+
+@keyframes _keepalive {
+  from { transform: translateZ(0); }
+  to { transform: translateZ(0.1px); }
+}
+
 .hud-overlay {
   position: fixed;
   inset: 0;

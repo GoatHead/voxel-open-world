@@ -260,7 +260,12 @@ function SceneContents({
     material.uniforms.uRayTracing.value = rayTracingEnabled ? 1 : 0
   }, [material, rayTracingEnabled, shaderSettings.ambient, shaderSettings.banding, shaderSettings.contrast, shaderSettings.rim, shaderSettings.saturation, shaderSettings.sunlight])
 
-  useFrame((_, delta) => {
+  useFrame((state, delta) => {
+    const fog = state.scene.fog as THREE.Fog | null
+    if (fog) {
+      fog.near = FOG_NEAR + Math.sin(state.clock.elapsedTime * 113) * 0.001
+    }
+
     if (materialRef.current) {
       materialRef.current.uniforms.uTime.value += delta
     }
@@ -609,6 +614,7 @@ export function Game({
 
   return (
     <Canvas
+      frameloop="always"
       camera={{ fov: 65, near: 0.1, far: FOG_FAR + 16, position: [32, 48, 32] }}
       dpr={[0.5, 0.8]}
       gl={{ antialias: false, powerPreference: "high-performance" }}
