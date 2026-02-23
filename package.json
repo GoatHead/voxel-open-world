@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "build": "npm run typecheck && vite build",
+    "build": "npm run typecheck && npm run ensure:rollup-native && vite build",
+    "ensure:rollup-native": "node scripts/ensure-rollup-native.mjs",
     "preview": "vite preview",
     "test": "vitest run",
     "worldhash": "tsx scripts/worldhash.ts"
